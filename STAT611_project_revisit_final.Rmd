@@ -1,0 +1,1311 @@
+---
+title: "Final STAT 611 revisited code"
+author: "Julio Carrillo"
+date: "2026-06-15"
+output: html_document
+---
+
+```{r}
+#Import the libraries that will be used
+library(dplyr)
+library(ggplot2)
+library(fastDummies)
+library(caret)
+library(tidymodels)
+library(car)
+library(ggfortify)
+library(broom)
+library(leaps)
+```
+
+```{r}
+#Import the data set
+df <- read.csv("Vehicle Data.csv")
+```
+
+```{r}
+#Take a glimpse at the data frame to make sure it has been imported correctly
+str(df)
+```
+
+```{r}
+#check the column names
+colnames(df)
+```
+
+```{r}
+dim(df)
+```
+
+```{r}
+#replace the instances of '.' and '...' with snake based column name format
+names(df) <- gsub("\\.{3}","_", names(df))
+names(df) <- gsub("\\.","_", names(df))
+```
+
+
+```{r}
+colnames(df)
+```
+
+```{r}
+#Denote categorical variables as factors
+df$Drive_Wheels <- as.factor(df$Drive_Wheels)
+df$Vehicle_Type <- as.factor(df$Vehicle_Type)
+df$Number_of_Cylinders <- as.factor(df$Number_of_Cylinders)
+```
+
+```{r}
+#Check if the variables have been denoted as a factor
+df_factors <- df[sapply(df,is.factor)]
+names(df_factors)
+factor_names <- names(df_factors)
+```
+
+```{r}
+#Check each level of the categorical variables
+levels(df$Number_of_Cylinders)
+```
+
+```{r}
+levels(df$Vehicle_Type)
+```
+
+```{r}
+levels(df$Drive_Wheels)
+```
+
+```{r}
+# Check the cardinality of the unique values of each categorical variable
+for (v in factor_names) {
+  print(table(df[[v]]))
+  cat("\n")
+}
+```
+
+
+```{r}
+#Drop the values where Drive wheels or vehicle type is equal to 0
+df <-filter(df, Drive_Wheels != 0 | Vehicle_Type != 0)
+```
+
+
+```{r}
+#Check if there is any null values in the df
+colSums(is.na(df))
+```
+
+```{r}
+#Inspect the continuous variables in the data set
+continuous_var <- names(df[sapply(df,is.numeric)])
+continuous_var <- setdiff(continuous_var,"Dealer_Cost")
+continuous_var
+```
+
+```{r}
+#Take a glimpse of the distribution shape of continous variables
+for(i in continuous_var){
+  hist(df[[i]],
+       probability = FALSE,
+       main = paste("histogram of", i),
+       xlab = i,
+       col = "lightgray",
+       border = "blue"
+       )
+}
+```
+
+```{r}
+#Summary Statistics for the continuous variables
+for(i in continuous_var){
+  cat("summary for", i, "\n")
+  print(summary(df[[i]]))
+  cat("\n")
+  cat("\n")
+}
+```
+
+```{r}
+#Distribution of the dependent variable
+#Pre log transformation the distribution is skewed to the right 
+ggplot(df, aes(x = MSRP)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Distribution of MSRP", x = "MSRP", y = "Count")
+
+#Log transformation has normalized the distribution
+ggplot(df, aes(x = log(MSRP))) +
+  geom_histogram(bins = 30) +
+  labs(title = "Distribution of log(MSRP)", x = "log(MSRP)", y = "Count")
+```
+```{r}
+#MSRP vs Horsepower distribtuion
+ggplot(df, aes(x = Horsepower, y = MSRP)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "MSRP vs Horsepower",
+    x = "Horsepower",
+    y = "MSRP"
+  )
+```
+```{r}
+ggplot(df, aes(x = Vehicle_Type, y = MSRP)) +
+  geom_boxplot() +
+  labs(
+    title = "MSRP by Vehicle Type",
+    x = "Vehicle Type",
+    y = "MSRP"
+  )
+```
+
+```{r}
+# Create weight groups
+df$Weight_Group <- cut(
+  df$Weight,
+  breaks = quantile(df$Weight, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+  labels = c("Low Weight", "Medium Weight", "High Weight"),
+  include.lowest = TRUE
+)
+
+# MSRP vs Horsepower by Weight group
+ggplot(df, aes(x = Horsepower, y = MSRP, color = Weight_Group)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "MSRP vs Horsepower by Weight Group",
+    x = "Horsepower",
+    y = "MSRP",
+    color = "Weight Group"
+  )
+```
+
+
+
+
+```{r}
+#Correlation amongst all the numeric predictors
+numeric_df <- df %>%
+  select(where(is.numeric)) %>%
+  select(-Dealer_Cost)
+
+cor(numeric_df, use = "complete.obs")
+```
+
+
+
+```{r}
+#Conduct the data splitting
+set.seed(1)
+split <- initial_split(df,prop = 0.75, strata = MSRP)
+train_df <- training(split)
+test_df <- testing(split)
+```
+
+```{r}
+#Check dimension of both
+dim(train_df)
+dim(test_df)
+```
+
+```{r}
+#Calculate the percentiles and IQR range from the continous variables
+bounds <- list()
+
+for (i in continuous_var) {
+  
+  q1_val <- quantile(train_df[[i]], 0.25, na.rm = TRUE)
+  q3_val <- quantile(train_df[[i]], 0.75, na.rm = TRUE)
+  iqr_val <- IQR(train_df[[i]], na.rm = TRUE)
+  median_val <- median(train_df[[i]], na.rm = TRUE)
+  
+  bounds[[i]] <- list(
+    q1 = q1_val,
+    q3 = q3_val,
+    iqr = iqr_val,
+    median = median_val,
+    low_bounds = q1_val - 1.5 * iqr_val,
+    high_bounds = q3_val + 1.5 * iqr_val
+  )
+}
+
+```
+
+```{r}
+#Example of access of variables
+#as.numeric is used to obtain only the number
+as.numeric(bounds[["Horsepower"]]$low_bounds)
+```
+
+```{r}
+#print out command to copy and paste to create the outlier indicator variable for the numeric variable
+for (i in continuous_var) {
+  print(
+    paste0(
+      "out_", i, " = as.integer(!is.na(", i, ") & (",
+      i, " < as.numeric(bounds[['", i, "']]$low_bounds) | ",
+      i, " > as.numeric(bounds[['", i, "']]$high_bounds)))"
+    )
+  )
+}
+```
+
+
+```{r}
+#Create a baseline recipe(pipeline)
+recipe_baseline <- recipe(MSRP ~., data = train_df) %>%
+  step_rm(Dealer_Cost, Vehicle) %>%
+  
+  #Outlier indicators
+  step_mutate(
+              out_Engine_Size = as.integer(!is.na(Engine_Size) & (Engine_Size < as.numeric(bounds[['Engine_Size']]$low_bounds) | Engine_Size > as.numeric(bounds[['Engine_Size']]$high_bounds))),
+              out_Horsepower = as.integer(!is.na(Horsepower) & (Horsepower < as.numeric(bounds[['Horsepower']]$low_bounds) | Horsepower > as.numeric(bounds[['Horsepower']]$high_bounds))),
+              out_Weight = as.integer(!is.na(Weight) & (Weight < as.numeric(bounds[['Weight']]$low_bounds) | Weight > as.numeric(bounds[['Weight']]$high_bounds))),
+              out_Wheelbase = as.integer(!is.na(Wheelbase) & (Wheelbase < as.numeric(bounds[['Wheelbase']]$low_bounds) | Wheelbase > as.numeric(bounds[['Wheelbase']]$high_bounds))),
+              out_Length = as.integer(!is.na(Length) & (Length < as.numeric(bounds[['Length']]$low_bounds) | Length > as.numeric(bounds[['Length']]$high_bounds))),
+              out_Width = as.integer(!is.na(Width) & (Width < as.numeric(bounds[['Width']]$low_bounds) | Width > as.numeric(bounds[['Width']]$high_bounds)))
+            ) %>%
+  #missing-value indicator
+  step_indicate_na(all_numeric_predictors()) %>%
+  #Imputation
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  #Group rare categorical groups
+  step_other(all_nominal_predictors(), threshold = 0.05) %>%
+  #Denote the reference levels
+  step_relevel(Drive_Wheels, ref_level = "FWD") %>%
+  step_relevel(Vehicle_Type, ref_level = "Wagon") %>%
+  step_relevel(Number_of_Cylinders, ref_level = "4") %>%
+  step_mutate_at(
+  c(
+    Engine_Size,
+    Horsepower,
+    MPG_City,
+    MPG_Hwy,
+    Weight,
+    Wheelbase,
+    Length,
+    Width
+  ),
+  fn = ~ (.x - median(.x, na.rm = TRUE)) / IQR(.x, na.rm = TRUE)
+) %>%
+  #OHE categorical variables
+  step_dummy(all_nominal_predictors(), one_hot = FALSE) %>%
+  #Remove zero variance and linear combination predictors
+  step_zv(all_predictors()) %>%
+  step_lincomb(all_predictors())
+  
+```
+
+
+```{r}
+#Denote the model and insert it into the workflow along with the pipeline
+mod <- linear_reg() %>% set_engine("lm")
+wf <-  workflow() %>% add_recipe(recipe_baseline) %>% add_model(mod)
+```
+
+```{r}
+#Fit the model into the training  data
+fit <- fit(wf, data=train_df)
+#Extract the linear model fitted object from the workflow
+lm_obj <- workflows::extract_fit_engine(fit)
+```
+
+
+```{r}
+#prepare the k-fold cross validation
+folds <- vfold_cv(train_df, v = 3)
+
+#Evaluate the baseline on training data
+res <- fit_resamples(
+  wf,
+  resamples = folds,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+#Collect the metrics of interest 
+cv_results <- collect_metrics(res) %>%
+  select(.metric, mean, std_err, n) %>%
+  mutate(
+    mean = round(mean, 2),
+    std_err = round(std_err, 2)
+  )
+cv_results
+```
+
+```{r}
+#Outputs the main diagnostic plots for multivariate linear regression
+autoplot(lm_obj)
+```
+
+```{r}
+#Check the baseline vif
+car::vif(lm_obj)
+```
+
+
+
+#Updated baseline 
+
+```{r}
+#Calculate quantiles and IQR for new variable which is a combination of both MPG variables to reduce multicollinearity
+train_bounds <- train_df %>%
+  dplyr::mutate(Combined_MPG = 0.55 * MPG_City + 0.45 * MPG_Hwy)
+
+mpg_q1 <- quantile(train_bounds$Combined_MPG, 0.25, na.rm = TRUE)
+mpg_q3 <- quantile(train_bounds$Combined_MPG, 0.75, na.rm = TRUE)
+mpg_iqr <- IQR(train_bounds$Combined_MPG, na.rm = TRUE)
+mpg_low <- mpg_q1 - 1.5 * mpg_iqr
+mpg_high <- mpg_q3 + 1.5 * mpg_iqr
+```
+
+
+
+```{r}
+#Updated recipe with the log transformation on MSRP and added MPG_combined new variable
+updated_recipe <-recipe(MSRP ~., data = train_df) %>%
+  step_rm(Dealer_Cost, Vehicle) %>%
+  
+  
+  # Combine MPG variable creation and remove the both original
+  step_mutate(Combined_MPG = 0.55 * MPG_City + 0.45 * MPG_Hwy) %>%
+  step_rm(MPG_City, MPG_Hwy) %>%
+  
+  #Outlier indicators
+  step_mutate(
+              out_Engine_Size = as.integer(!is.na(Engine_Size) & (Engine_Size < as.numeric(bounds[['Engine_Size']]$low_bounds) | Engine_Size > as.numeric(bounds[['Engine_Size']]$high_bounds))),
+              out_Horsepower = as.integer(!is.na(Horsepower) & (Horsepower < as.numeric(bounds[['Horsepower']]$low_bounds) | Horsepower > as.numeric(bounds[['Horsepower']]$high_bounds))),
+              out_Weight = as.integer(!is.na(Weight) & (Weight < as.numeric(bounds[['Weight']]$low_bounds) | Weight > as.numeric(bounds[['Weight']]$high_bounds))),
+              out_Wheelbase = as.integer(!is.na(Wheelbase) & (Wheelbase < as.numeric(bounds[['Wheelbase']]$low_bounds) | Wheelbase > as.numeric(bounds[['Wheelbase']]$high_bounds))),
+              out_Length = as.integer(!is.na(Length) & (Length < as.numeric(bounds[['Length']]$low_bounds) | Length > as.numeric(bounds[['Length']]$high_bounds))),
+              out_Width = as.integer(!is.na(Width) & (Width < as.numeric(bounds[['Width']]$low_bounds) | Width > as.numeric(bounds[['Width']]$high_bounds)))
+            ) %>%
+  step_mutate(
+    out_Combined_MPG = as.integer(
+      !is.na(Combined_MPG) & 
+        (Combined_MPG < mpg_low | Combined_MPG > mpg_high)
+    )
+  ) %>%
+  #missing-value indicator
+  step_indicate_na(all_numeric_predictors()) %>%
+  #Imputation
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  #Group rare categorical groups
+  step_other(all_nominal_predictors(), threshold = 0.05) %>%
+  #Denote the reference levels
+  step_relevel(Drive_Wheels, ref_level = "FWD") %>%
+  step_relevel(Vehicle_Type, ref_level = "Wagon") %>%
+  step_relevel(Number_of_Cylinders, ref_level = "4") %>%
+  step_mutate_at(c(Engine_Size, Horsepower, Weight, Wheelbase, Length, Width, Combined_MPG),
+                 fn = ~ (.x - median(.x,na.rm = TRUE)) /  IQR(.x, na.rm = TRUE)) %>%
+  #OHE categorical variables
+  step_dummy(all_nominal_predictors(), one_hot = FALSE) %>%
+  #Remove zero variance and linear combination predictors
+  step_zv(all_predictors()) %>%
+  step_lincomb(all_predictors()) %>%
+  # Log-transform outcome during training only
+  step_log(all_outcomes(), skip = TRUE)
+  
+```
+
+
+
+
+```{r}
+#update the workflow recipe
+wf_updated <-  workflow() %>% add_recipe(updated_recipe) %>% add_model(mod)
+```
+
+
+```{r}
+fit_updated <- fit(wf_updated, data=train_df)
+lm_obj_updated <- workflows::extract_fit_engine(fit_updated)
+```
+
+
+```{r}
+#Collecting metrics that are log transformed dependent variable
+res_updated <- fit_resamples(
+  wf_updated,
+  resamples = folds,
+  metrics = metric_set(rmse, mae, rsq),
+  control = control_resamples(save_pred = TRUE)
+)
+
+cv_results_updated <- collect_metrics(res_updated) %>%
+  select(.metric, mean, std_err, n) %>%
+  mutate(
+    mean = round(mean, 2),
+    std_err = round(std_err, 2)
+  )
+cv_results_updated
+```
+
+```{r}
+#transform the predictions back into dollar format mainly for MAE,and RMSE
+cv_preds_updated_exp <- collect_predictions(res_updated) %>%
+  mutate(.pred_dollars = exp(.pred))
+
+cv_metrics_updated_dollars <- yardstick::metric_set(
+  yardstick::rmse,
+  yardstick::mae,
+  yardstick::rsq
+)(
+  cv_preds_updated_exp,
+  truth = MSRP,
+  estimate = .pred_dollars
+)
+
+cv_metrics_updated_dollars
+```
+
+
+```{r}
+autoplot(lm_obj_updated)
+```
+
+
+
+
+#Prepare the mallows cp on main effects selection
+
+```{r}
+#Updated recipe with main effects 
+main_recipe <-recipe(MSRP ~., data = train_df) %>%
+  step_rm(Dealer_Cost, Vehicle) %>%
+  
+  
+  # Combine MPG variable creation and remove the both original
+  step_mutate(Combined_MPG = 0.55 * MPG_City + 0.45 * MPG_Hwy) %>%
+  step_rm(MPG_City, MPG_Hwy) %>%
+  
+  #Outlier indicators
+  step_mutate(
+              out_Engine_Size = as.integer(!is.na(Engine_Size) & (Engine_Size < as.numeric(bounds[['Engine_Size']]$low_bounds) | Engine_Size > as.numeric(bounds[['Engine_Size']]$high_bounds))),
+              out_Horsepower = as.integer(!is.na(Horsepower) & (Horsepower < as.numeric(bounds[['Horsepower']]$low_bounds) | Horsepower > as.numeric(bounds[['Horsepower']]$high_bounds))),
+              out_Weight = as.integer(!is.na(Weight) & (Weight < as.numeric(bounds[['Weight']]$low_bounds) | Weight > as.numeric(bounds[['Weight']]$high_bounds))),
+              out_Wheelbase = as.integer(!is.na(Wheelbase) & (Wheelbase < as.numeric(bounds[['Wheelbase']]$low_bounds) | Wheelbase > as.numeric(bounds[['Wheelbase']]$high_bounds))),
+              out_Length = as.integer(!is.na(Length) & (Length < as.numeric(bounds[['Length']]$low_bounds) | Length > as.numeric(bounds[['Length']]$high_bounds))),
+              out_Width = as.integer(!is.na(Width) & (Width < as.numeric(bounds[['Width']]$low_bounds) | Width > as.numeric(bounds[['Width']]$high_bounds)))
+            ) %>%
+  step_mutate(
+    out_Combined_MPG = as.integer(
+      !is.na(Combined_MPG) & 
+        (Combined_MPG < mpg_low | Combined_MPG > mpg_high)
+    )
+  ) %>%
+  #missing-value indicator
+  step_indicate_na(all_numeric_predictors()) %>%
+  #Imputation
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  #Group rare categorical groups
+  step_other(all_nominal_predictors(), threshold = 0.05) %>%
+  #Denote the reference levels
+  step_relevel(Drive_Wheels, ref_level = "FWD") %>%
+  step_relevel(Vehicle_Type, ref_level = "Wagon") %>%
+  step_relevel(Number_of_Cylinders, ref_level = "4") %>%
+  step_mutate_at( c(Engine_Size, Horsepower, Weight, Wheelbase, Length, Width, Combined_MPG),
+                 fn = ~ (.x - median(.x,na.rm = TRUE)) /  IQR(.x, na.rm = TRUE)) %>%
+  #OHE categorical variables
+  step_dummy(all_nominal_predictors(), one_hot = FALSE) %>%
+  
+  #Remove zero variance and linear combination predictors
+  step_zv(all_predictors()) %>%
+  step_lincomb(all_predictors()) %>%
+  # Log-transform outcome during training only
+  step_log(all_outcomes(), skip = TRUE)
+  
+```
+
+
+#Prepare the data for model selection via mallows cp
+```{r}
+#Prep the recipe meaning we keep track of the recipe of the created pipeline
+prepped_main_rec <- prep(main_recipe, training = train_df)
+
+#bake means we apply the preprocess pipeline manually
+baked_train_main <- bake(prepped_main_rec, new_data = NULL)
+
+names(baked_train_main)
+```
+
+```{r}
+# Full main effects model check that the pipeline worked
+fit_lm_main_full <- lm(MSRP ~ ., data = baked_train_main)
+
+broom::tidy(fit_lm_main_full) %>%
+  dplyr::filter(is.na(estimate))
+
+car::vif(fit_lm_main_full)
+```
+
+```{r}
+#prepare the mallows cp selection with method of stepwise model selection, where we also limit the model to have up to 20 model variables
+sub_main <- regsubsets(
+  MSRP ~ .,
+  data = baked_train_main,
+  method = "seqrep",
+  nbest = 1,
+  nvmax = 20
+)
+
+#Have the metrics recorded within each entry or removal of a variable 
+s_main <- summary(sub_main)
+
+s_main$cp
+```
+
+```{r}
+#Get the history of the adj r^2 of the model selection
+s_main$adjr2
+```
+
+```{r}
+#Look at the model with the lowest CP and its coefficients
+id_main <- which.min(s_main$cp)
+coef(sub_main, id=id_main)
+```
+
+
+
+```{r}
+
+coefs_main <- coef(sub_main, id = id_main)
+#We keep the names of the best model based on model selection into the variable excluding the intercept
+vars_main <- setdiff(names(coefs_main), "(Intercept)")
+
+#Re-fit the chosen model
+form_main <- reformulate(vars_main, response = "MSRP")
+
+#Save the lm model object into the variable
+m_main <- lm(form_main, data = baked_train_main)
+
+#tidy makes the m_int output into a table with estimate, std error, statistics, p-value
+#Here we look if a variable is not estimable or problematic (high multicollinearity)
+broom::tidy(m_main) %>%
+  dplyr::filter(is.na(estimate))
+
+car::vif(m_main)
+
+```
+
+```{r}
+#re-adjust the recipe to include the best selected variables from model selection
+final_main_rec <- main_recipe %>%
+  #Keeps the selected variables plus the outcome variables specified
+  step_select(any_of(vars_main), all_outcomes())
+```
+
+
+```{r}
+#Re-establish the workflow
+wf_main <- workflow() %>%
+  add_recipe(final_main_rec) %>%
+  add_model(mod)
+```
+
+
+```{r}
+res_main <- fit_resamples(
+  wf_main,
+  resamples = folds,
+  metrics = metric_set(rmse, mae, rsq),
+  #We save the predictions in the cross validation to evaluate the trained model
+  control = control_resamples(save_pred = TRUE)
+)
+```
+
+
+```{r}
+cv_preds_main <- collect_predictions(res_main) %>%
+  mutate(.pred_dollars = exp(.pred))
+
+cv_metrics_main_dollars <- yardstick::metric_set(
+  yardstick::rmse,
+  yardstick::mae,
+  yardstick::rsq
+)(
+  cv_preds_main,
+  truth = MSRP,
+  estimate = .pred_dollars
+)
+
+cv_metrics_main_dollars
+```
+
+
+
+
+
+#Prepare meaningful interactions variables for model selection, for model selection via mallows cp
+
+```{r}
+#Updated recipe with interaction models for the 
+int_recipe <-recipe(MSRP ~., data = train_df) %>%
+  step_rm(Dealer_Cost, Vehicle) %>%
+  
+  
+  # Combine MPG variable creation and remove the both original
+  step_mutate(Combined_MPG = 0.55 * MPG_City + 0.45 * MPG_Hwy) %>%
+  step_rm(MPG_City, MPG_Hwy) %>%
+  
+  #Outlier indicators
+  step_mutate(
+              out_Engine_Size = as.integer(!is.na(Engine_Size) & (Engine_Size < as.numeric(bounds[['Engine_Size']]$low_bounds) | Engine_Size > as.numeric(bounds[['Engine_Size']]$high_bounds))),
+              out_Horsepower = as.integer(!is.na(Horsepower) & (Horsepower < as.numeric(bounds[['Horsepower']]$low_bounds) | Horsepower > as.numeric(bounds[['Horsepower']]$high_bounds))),
+              out_Weight = as.integer(!is.na(Weight) & (Weight < as.numeric(bounds[['Weight']]$low_bounds) | Weight > as.numeric(bounds[['Weight']]$high_bounds))),
+              out_Wheelbase = as.integer(!is.na(Wheelbase) & (Wheelbase < as.numeric(bounds[['Wheelbase']]$low_bounds) | Wheelbase > as.numeric(bounds[['Wheelbase']]$high_bounds))),
+              out_Length = as.integer(!is.na(Length) & (Length < as.numeric(bounds[['Length']]$low_bounds) | Length > as.numeric(bounds[['Length']]$high_bounds))),
+              out_Width = as.integer(!is.na(Width) & (Width < as.numeric(bounds[['Width']]$low_bounds) | Width > as.numeric(bounds[['Width']]$high_bounds)))
+            ) %>%
+  step_mutate(
+    out_Combined_MPG = as.integer(
+      !is.na(Combined_MPG) & 
+        (Combined_MPG < mpg_low | Combined_MPG > mpg_high)
+    )
+  ) %>%
+  #missing-value indicator
+  step_indicate_na(all_numeric_predictors()) %>%
+  #Imputation
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  #Group rare categorical groups
+  step_other(all_nominal_predictors(), threshold = 0.05) %>%
+  #Denote the reference levels
+  step_relevel(Drive_Wheels, ref_level = "FWD") %>%
+  step_relevel(Vehicle_Type, ref_level = "Wagon") %>%
+  step_relevel(Number_of_Cylinders, ref_level = "4") %>%
+  step_mutate_at( c(Engine_Size, Horsepower, Weight, Wheelbase, Length, Width, Combined_MPG),
+                 fn = ~ (.x - median(.x,na.rm = TRUE)) /  IQR(.x, na.rm = TRUE)) %>%
+  #OHE categorical variables
+  step_dummy(all_nominal_predictors(), one_hot = FALSE) %>%
+  #Add interactions
+  step_interact(
+    terms = ~ Horsepower:starts_with("Vehicle_Type_")
+  ) %>%
+  step_interact(
+    terms = ~ Length:Width
+  ) %>%
+  step_interact(
+    terms = ~ Horsepower:Weight
+  ) %>%
+  
+  
+  #Remove zero variance and linear combination predictors
+  step_zv(all_predictors()) %>%
+  step_lincomb(all_predictors()) %>%
+  # Log-transform outcome during training only
+  step_log(all_outcomes(), skip = TRUE)
+  
+```
+
+
+#Prepare the data for model selection via mallows cp
+```{r}
+#Prep the recipe meaning we keep track of the recipe of the created pipeline
+prepped_int_rec <- prep(int_recipe, training = train_df)
+
+#bake means we apply the preprocess pipeline manually
+baked_train_int <- bake(prepped_int_rec, new_data = NULL)
+
+#Full models variable names
+names(baked_train_int)
+```
+
+```{r}
+# Full interaction model check that the pipeline worked
+fit_lm_int_full <- lm(MSRP ~ ., data = baked_train_int)
+
+broom::tidy(fit_lm_int_full) %>%
+  dplyr::filter(is.na(estimate))
+
+car::vif(fit_lm_int_full)
+```
+
+
+
+
+
+```{r}
+#prepare the mallows cp selection with method of stepwise model selection, where we also limit the model to have up to 20 model variables
+sub_int <- regsubsets(
+  MSRP ~ .,
+  data = baked_train_int,
+  method = "seqrep",
+  nbest = 1,
+  nvmax = 20
+)
+
+#Have 
+s_int <- summary(sub_int)
+
+s_int$cp
+```
+
+```{r}
+s_int$adjr2
+```
+
+```{r}
+id_int <- which.min(s_int$cp)
+coef(sub_int, id=id_int)
+```
+
+```{r}
+
+coefs_int <- coef(sub_int, id = id_int)
+#We keep the names of the best model based on model selection into the variable
+vars_int <- setdiff(names(coefs_int), "(Intercept)")
+
+#Re-fit the chosen model
+form_int <- reformulate(vars_int, response = "MSRP")
+
+#Save the lm model object into the variable
+m_int <- lm(form_int, data = baked_train_int)
+
+#tidy makes the m_int output into a table with estimate, std error, statistics, p-value
+#Here we look if a variable is not estimable or problematic
+broom::tidy(m_int) %>%
+  dplyr::filter(is.na(estimate))
+
+car::vif(m_int)
+
+```
+
+
+
+```{r}
+#re-adjust the recipe 
+final_int_rec <- int_recipe %>%
+  step_select(any_of(vars_int), all_outcomes())
+```
+
+
+```{r}
+#Re-establish the workflow
+wf_int <- workflow() %>%
+  add_recipe(final_int_rec) %>%
+  add_model(mod)
+```
+
+
+```{r}
+res_int <- fit_resamples(
+  wf_int,
+  resamples = folds,
+  metrics = metric_set(rmse, mae, rsq),
+  control = control_resamples(save_pred = TRUE)
+)
+```
+
+
+```{r}
+cv_preds_int <- collect_predictions(res_int) %>%
+  mutate(.pred_dollars = exp(.pred))
+
+cv_metrics_int_dollars <- yardstick::metric_set(
+  yardstick::rmse,
+  yardstick::mae,
+  yardstick::rsq
+)(
+  cv_preds_int,
+  truth = MSRP,
+  estimate = .pred_dollars
+)
+
+cv_metrics_int_dollars
+```
+
+
+```{r}
+#This has only the main effects ridge recipe
+ridge_recipe <-recipe(MSRP ~., data = train_df) %>%
+  step_rm(Dealer_Cost, Vehicle) %>%
+  
+  
+  # Combine MPG variable creation and remove the both original
+  step_mutate(Combined_MPG = 0.55 * MPG_City + 0.45 * MPG_Hwy) %>%
+  step_rm(MPG_City, MPG_Hwy) %>%
+  
+  #Outlier indicators
+  step_mutate(
+              out_Engine_Size = as.integer(!is.na(Engine_Size) & (Engine_Size < as.numeric(bounds[['Engine_Size']]$low_bounds) | Engine_Size > as.numeric(bounds[['Engine_Size']]$high_bounds))),
+              out_Horsepower = as.integer(!is.na(Horsepower) & (Horsepower < as.numeric(bounds[['Horsepower']]$low_bounds) | Horsepower > as.numeric(bounds[['Horsepower']]$high_bounds))),
+              out_Weight = as.integer(!is.na(Weight) & (Weight < as.numeric(bounds[['Weight']]$low_bounds) | Weight > as.numeric(bounds[['Weight']]$high_bounds))),
+              out_Wheelbase = as.integer(!is.na(Wheelbase) & (Wheelbase < as.numeric(bounds[['Wheelbase']]$low_bounds) | Wheelbase > as.numeric(bounds[['Wheelbase']]$high_bounds))),
+              out_Length = as.integer(!is.na(Length) & (Length < as.numeric(bounds[['Length']]$low_bounds) | Length > as.numeric(bounds[['Length']]$high_bounds))),
+              out_Width = as.integer(!is.na(Width) & (Width < as.numeric(bounds[['Width']]$low_bounds) | Width > as.numeric(bounds[['Width']]$high_bounds)))
+            ) %>%
+  step_mutate(
+    out_Combined_MPG = as.integer(
+      !is.na(Combined_MPG) & 
+        (Combined_MPG < mpg_low | Combined_MPG > mpg_high)
+    )
+  ) %>%
+  #missing-value indicator
+  step_indicate_na(all_numeric_predictors()) %>%
+  #Imputation
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  #Group rare categorical groups
+  step_other(all_nominal_predictors(), threshold = 0.05) %>%
+  #Denote the reference levels
+  step_relevel(Drive_Wheels, ref_level = "FWD") %>%
+  step_relevel(Vehicle_Type, ref_level = "Wagon") %>%
+  step_relevel(Number_of_Cylinders, ref_level = "4") %>%
+  step_mutate_at( c(Engine_Size, Horsepower, Weight, Wheelbase, Length, Width, Combined_MPG),
+                 fn = ~ (.x - median(.x,na.rm = TRUE)) /  IQR(.x, na.rm = TRUE)) %>%
+  #OHE categorical variables
+  step_dummy(all_nominal_predictors(), one_hot = FALSE) %>%
+  
+  #Remove zero variance and linear combination predictors
+  step_zv(all_predictors()) %>%
+  # Log-transform outcome during training only
+  step_log(all_outcomes(), skip = TRUE)
+  
+```
+
+
+```{r}
+#Ridge model specification and workflow
+ridge_model <- linear_reg(penalty =  tune(), mixture = 0) %>%
+  set_engine("glmnet")
+
+wf_ridge <- workflow() %>% add_recipe(ridge_recipe) %>% add_model(ridge_model)
+```
+
+
+```{r}
+penalty_grid <-grid_regular(penalty(), levels = 50)
+
+res_ridge <- tune_grid(
+  wf_ridge,
+  resamples = folds,
+  grid = penalty_grid,
+  metrics = yardstick::metric_set(
+    yardstick::rmse,
+    yardstick::mae
+  ),
+  control = control_grid(save_pred = TRUE)
+)
+```
+
+
+
+
+```{r}
+# Check ridge CV results
+collect_metrics(res_ridge)
+
+# Select best penalty based on RMSE
+best_ridge <- select_best(res_ridge, metric = "rmse")
+
+best_ridge
+```
+
+```{r}
+cv_preds_ridge <- collect_predictions(res_ridge) %>%
+  semi_join(best_ridge, by = "penalty") %>%
+  mutate(
+    .pred_dollars = exp(.pred)
+  )
+
+summary(cv_preds_ridge$MSRP)
+summary(cv_preds_ridge$.pred)
+summary(cv_preds_ridge$.pred_dollars)
+```
+
+
+```{r}
+cv_preds_ridge %>%
+  metrics(truth = MSRP, estimate = .pred_dollars)
+
+cv_preds_ridge %>%
+  rmse(truth = MSRP, estimate = .pred_dollars)
+
+cv_preds_ridge %>%
+  mae(truth = MSRP, estimate = .pred_dollars)
+
+cv_preds_ridge %>%
+  rsq(truth = MSRP, estimate = .pred_dollars)
+```
+
+
+
+```{r}
+#ridge models summary
+cv_metrics_ridge_dollars <- yardstick::metric_set(
+  yardstick::rmse,
+  yardstick::mae,
+  yardstick::rsq
+)(
+  cv_preds_ridge,
+  truth = MSRP,
+  estimate = .pred_dollars
+)
+
+cv_metrics_ridge_dollars
+```
+
+
+
+#Ridge model with interactions
+
+```{r}
+int_ridge_recipe <-recipe(MSRP ~., data = train_df) %>%
+  step_rm(Dealer_Cost, Vehicle) %>%
+  
+  
+  # Combine MPG variable creation and remove the both original
+  step_mutate(Combined_MPG = 0.55 * MPG_City + 0.45 * MPG_Hwy) %>%
+  step_rm(MPG_City, MPG_Hwy) %>%
+  
+  #Outlier indicators
+  step_mutate(
+              out_Engine_Size = as.integer(!is.na(Engine_Size) & (Engine_Size < as.numeric(bounds[['Engine_Size']]$low_bounds) | Engine_Size > as.numeric(bounds[['Engine_Size']]$high_bounds))),
+              out_Horsepower = as.integer(!is.na(Horsepower) & (Horsepower < as.numeric(bounds[['Horsepower']]$low_bounds) | Horsepower > as.numeric(bounds[['Horsepower']]$high_bounds))),
+              out_Weight = as.integer(!is.na(Weight) & (Weight < as.numeric(bounds[['Weight']]$low_bounds) | Weight > as.numeric(bounds[['Weight']]$high_bounds))),
+              out_Wheelbase = as.integer(!is.na(Wheelbase) & (Wheelbase < as.numeric(bounds[['Wheelbase']]$low_bounds) | Wheelbase > as.numeric(bounds[['Wheelbase']]$high_bounds))),
+              out_Length = as.integer(!is.na(Length) & (Length < as.numeric(bounds[['Length']]$low_bounds) | Length > as.numeric(bounds[['Length']]$high_bounds))),
+              out_Width = as.integer(!is.na(Width) & (Width < as.numeric(bounds[['Width']]$low_bounds) | Width > as.numeric(bounds[['Width']]$high_bounds)))
+            ) %>%
+  step_mutate(
+    out_Combined_MPG = as.integer(
+      !is.na(Combined_MPG) & 
+        (Combined_MPG < mpg_low | Combined_MPG > mpg_high)
+    )
+  ) %>%
+  #missing-value indicator
+  step_indicate_na(all_numeric_predictors()) %>%
+  #Imputation
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  
+  #Group rare categorical groups
+  step_other(all_nominal_predictors(), threshold = 0.05) %>%
+  #Denote the reference levels
+  step_relevel(Drive_Wheels, ref_level = "FWD") %>%
+  step_relevel(Vehicle_Type, ref_level = "Wagon") %>%
+  step_relevel(Number_of_Cylinders, ref_level = "4") %>%
+  step_mutate_at( c(Engine_Size, Horsepower, Weight, Wheelbase, Length, Width, Combined_MPG),
+                 fn = ~ (.x - median(.x,na.rm = TRUE)) /  IQR(.x, na.rm = TRUE)) %>%
+  #OHE categorical variables
+  step_dummy(all_nominal_predictors(), one_hot = FALSE) %>%
+  #Add interactions
+  step_interact(
+    terms = ~ Horsepower:starts_with("Vehicle_Type_")
+  ) %>%
+  step_interact(
+    terms = ~ Length:Width
+  ) %>%
+  step_interact(
+    terms = ~ Horsepower:Weight
+  ) %>%
+  
+  
+  #Remove zero variance and linear combination predictors
+  step_zv(all_predictors()) %>%
+  # Log-transform outcome during training only
+  step_log(all_outcomes(), skip = TRUE)
+  
+```
+
+
+```{r}
+#Ridge model specification and workflow
+
+wf_ridge_int <- workflow() %>% add_recipe(int_ridge_recipe) %>% add_model(ridge_model)
+```
+
+
+```{r}
+penalty_grid <-grid_regular(penalty(), levels = 50)
+
+res_ridge_int <- tune_grid(
+  wf_ridge_int,
+  resamples = folds,
+  grid = penalty_grid,
+  metrics = yardstick::metric_set(
+    yardstick::rmse,
+    yardstick::mae,
+    yardstick::rsq
+  ),
+  control = control_grid(save_pred = TRUE)
+)
+```
+
+```{r}
+# Check ridge CV results
+collect_metrics(res_ridge_int)
+
+# Select best penalty based on RMSE
+best_ridge_int <- select_best(res_ridge_int, metric = "rmse")
+
+best_ridge_int
+```
+
+
+
+```{r}
+cv_preds_ridge_int <- collect_predictions(res_ridge_int) %>%
+  semi_join(best_ridge_int, by = "penalty") %>%
+  mutate(
+    .pred_dollars = exp(.pred)
+  )
+
+summary(cv_preds_ridge_int$MSRP)
+summary(cv_preds_ridge_int$.pred)
+summary(cv_preds_ridge_int$.pred_dollars)
+```
+
+
+```{r}
+cv_preds_ridge_int %>%
+  metrics(truth = MSRP, estimate = .pred_dollars)
+
+cv_preds_ridge_int %>%
+  rmse(truth = MSRP, estimate = .pred_dollars)
+
+cv_preds_ridge_int %>%
+  mae(truth = MSRP, estimate = .pred_dollars)
+
+cv_preds_ridge_int %>%
+  rsq(truth = MSRP, estimate = .pred_dollars)
+```
+
+
+
+```{r}
+
+cv_metrics_ridge_int_dollars <- yardstick::metric_set(
+  yardstick::rmse,
+  yardstick::mae,
+  yardstick::rsq
+)(
+  cv_preds_ridge_int,
+  truth = MSRP,
+  estimate = .pred_dollars
+)
+```
+
+
+
+```{r}
+candidate_model_summary <- bind_rows(
+  cv_metrics_updated_dollars %>% mutate(Model = "Updated LM"),
+  cv_metrics_main_dollars %>% mutate(Model = "Main Effects LM"),
+  cv_metrics_int_dollars %>% mutate(Model = "Interaction LM"),
+  cv_metrics_ridge_dollars %>% mutate(Model = "Ridge Main Effects"),
+  cv_metrics_ridge_int_dollars %>% mutate(Model = "Ridge Interaction")
+) %>%
+  select(Model, .metric, .estimate) %>%
+  mutate(
+    .metric = case_when(
+      .metric == "rmse" ~ "RMSE",
+      .metric == "mae"  ~ "MAE",
+      .metric == "rsq"  ~ "R-squared"
+    ),
+    .estimate = round(.estimate, 2)
+  ) %>%
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  ) %>%
+  arrange(RMSE)
+
+candidate_model_summary
+```
+
+
+
+#Evaluation of the final model based on the evaluation metrics
+```{r}
+#Important: do not prep the recipe again on the test data.
+# Bake training and testing data
+#Training does the model fit and the hypothesis testing
+baked_train_int <- bake(prepped_int_rec, new_data = train_df)
+baked_test_int  <- bake(prepped_int_rec, new_data = test_df)
+```
+
+
+
+```{r}
+#Based on the evaluated models, the interaction linear models
+#But we need to force the interactions
+# Manually force important interaction terms
+forced_interactions <- c(
+  "Length",
+
+  "Vehicle_Type_Minivan",
+  "Vehicle_Type_Pickup",
+  "Vehicle_Type_Sedan",
+  "Vehicle_Type_Sports.Car",
+  "Vehicle_Type_SUV",
+
+  "Horsepower_x_Vehicle_Type_Minivan",
+  "Horsepower_x_Vehicle_Type_Pickup",
+  "Horsepower_x_Vehicle_Type_Sedan",
+  "Horsepower_x_Vehicle_Type_Sports.Car",
+  "Horsepower_x_Vehicle_Type_SUV"
+)
+
+# Final variable set
+vars_final <- union(vars_int, forced_interactions)
+
+# Check missing columns
+setdiff(vars_final, names(baked_train_int))
+```
+
+
+
+
+```{r}
+# Create final formula
+form_final <- reformulate(vars_final, response = "MSRP")
+
+# Fit final model
+final_model <- lm(form_final, data = baked_train_int)
+
+# Hypothesis tests / coefficient table
+summary(final_model)
+```
+
+
+```{r}
+vif(final_model)
+```
+
+```{r}
+# Predict on test set
+test_preds_final <- predict(final_model, newdata = baked_test_int)
+
+# Test metrics
+yardstick::metrics(
+  data.frame(
+    truth = baked_test_int$MSRP,
+    estimate = test_preds_final
+  ),
+  truth = truth,
+  estimate = estimate
+)
+```
+
+```{r}
+#Corrected
+# Create final formula with log outcome
+form_final <- as.formula(
+  paste("log(MSRP) ~", paste(vars_final, collapse = " + "))
+)
+
+# Fit final model
+final_model <- lm(form_final, data = baked_train_int)
+
+# Hypothesis tests / coefficient table
+summary(final_model)
+```
+
+```{r}
+vif(final_model)
+```
+
+```{r}
+autoplot(final_model)
+```
+
+#Length only added final model
+
+
+```{r}
+#Based on the evaluated models, the interaction linear models
+#But we need to force the interactions
+# Manually force important interaction terms
+Additional_variables<- c(
+  "Length"
+)
+
+# Final variable set
+vars_final <- union(vars_int, Additional_variables)
+
+# Check missing columns
+setdiff(vars_final, names(baked_train_int))
+```
+
+
+
+
+```{r}
+# Create final formula
+form_final <- reformulate(vars_final, response = "MSRP")
+
+# Fit final model
+final_model <- lm(form_final, data = baked_train_int)
+
+# Hypothesis tests / coefficient table
+summary(final_model)
+```
+
+```{r}
+form_final_log <- as.formula(
+  paste("log(MSRP) ~", paste(vars_final, collapse = " + "))
+)
+
+final_model_log <- lm(form_final_log, data = baked_train_int)
+
+summary(final_model_log)
+autoplot(final_model_log)
+```
+
+
+```{r}
+autoplot(final_model_log)
+```
+
+
+```{r}
+vif(final_model_log)
+```
+
+
+
+
+
+```{r}
+# Predict on log scale
+test_preds_log <- predict(final_model_log, newdata = baked_test_int)
+
+# Test metrics on log scale
+yardstick::metrics(
+  data.frame(
+    truth = log(baked_test_int$MSRP),
+    estimate = test_preds_log
+  ),
+  truth = truth,
+  estimate = estimate
+)
+```
+
+
+
+```{r}
+# Predict on log scale
+test_preds_log <- predict(final_model_log, newdata = baked_test_int)
+
+# Convert back to dollar scale
+test_preds_dollar <- exp(test_preds_log)
+
+# Test metrics on dollar scale
+yardstick::metrics(
+  data.frame(
+    truth = baked_test_int$MSRP,
+    estimate = test_preds_dollar
+  ),
+  truth = truth,
+  estimate = estimate
+)
+```
