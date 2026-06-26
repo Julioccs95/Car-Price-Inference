@@ -18,4 +18,4 @@ In this project, I analyzed car pricing data to identify the factors associated 
 
 - [View full report](STAT611_revisit.pdf)
 - [View R Markdown file](STAT611_project_revisit_final.Rmd)
-- [More technical report( Was done in SAS and was the original version)](STAT611 _technical_details.pdf)
+- [Technical Report (Original SAS Version)](STAT611_technical_details.pdf)
