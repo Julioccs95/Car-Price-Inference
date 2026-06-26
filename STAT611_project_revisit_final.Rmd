@@ -1124,101 +1124,9 @@ candidate_model_summary
 
 
 
-#Evaluation of the final model based on the evaluation metrics
-```{r}
-#Important: do not prep the recipe again on the test data.
-# Bake training and testing data
-#Training does the model fit and the hypothesis testing
-baked_train_int <- bake(prepped_int_rec, new_data = train_df)
-baked_test_int  <- bake(prepped_int_rec, new_data = test_df)
-```
 
 
-
-```{r}
-#Based on the evaluated models, the interaction linear models
-#But we need to force the interactions
-# Manually force important interaction terms
-forced_interactions <- c(
-  "Length",
-
-  "Vehicle_Type_Minivan",
-  "Vehicle_Type_Pickup",
-  "Vehicle_Type_Sedan",
-  "Vehicle_Type_Sports.Car",
-  "Vehicle_Type_SUV",
-
-  "Horsepower_x_Vehicle_Type_Minivan",
-  "Horsepower_x_Vehicle_Type_Pickup",
-  "Horsepower_x_Vehicle_Type_Sedan",
-  "Horsepower_x_Vehicle_Type_Sports.Car",
-  "Horsepower_x_Vehicle_Type_SUV"
-)
-
-# Final variable set
-vars_final <- union(vars_int, forced_interactions)
-
-# Check missing columns
-setdiff(vars_final, names(baked_train_int))
-```
-
-
-
-
-```{r}
-# Create final formula
-form_final <- reformulate(vars_final, response = "MSRP")
-
-# Fit final model
-final_model <- lm(form_final, data = baked_train_int)
-
-# Hypothesis tests / coefficient table
-summary(final_model)
-```
-
-
-```{r}
-vif(final_model)
-```
-
-```{r}
-# Predict on test set
-test_preds_final <- predict(final_model, newdata = baked_test_int)
-
-# Test metrics
-yardstick::metrics(
-  data.frame(
-    truth = baked_test_int$MSRP,
-    estimate = test_preds_final
-  ),
-  truth = truth,
-  estimate = estimate
-)
-```
-
-```{r}
-#Corrected
-# Create final formula with log outcome
-form_final <- as.formula(
-  paste("log(MSRP) ~", paste(vars_final, collapse = " + "))
-)
-
-# Fit final model
-final_model <- lm(form_final, data = baked_train_int)
-
-# Hypothesis tests / coefficient table
-summary(final_model)
-```
-
-```{r}
-vif(final_model)
-```
-
-```{r}
-autoplot(final_model)
-```
-
-#Length only added final model
+#Length only added final model to respect the heirarchal property of interaction
 
 
 ```{r}
@@ -1258,7 +1166,6 @@ form_final_log <- as.formula(
 final_model_log <- lm(form_final_log, data = baked_train_int)
 
 summary(final_model_log)
-autoplot(final_model_log)
 ```
 
 
@@ -1284,26 +1191,6 @@ yardstick::metrics(
   data.frame(
     truth = log(baked_test_int$MSRP),
     estimate = test_preds_log
-  ),
-  truth = truth,
-  estimate = estimate
-)
-```
-
-
-
-```{r}
-# Predict on log scale
-test_preds_log <- predict(final_model_log, newdata = baked_test_int)
-
-# Convert back to dollar scale
-test_preds_dollar <- exp(test_preds_log)
-
-# Test metrics on dollar scale
-yardstick::metrics(
-  data.frame(
-    truth = baked_test_int$MSRP,
-    estimate = test_preds_dollar
   ),
   truth = truth,
   estimate = estimate
