@@ -14,6 +14,7 @@ In this project, I analyzed car pricing data to identify the factors associated 
 - Business focused reporting
 - Data preprocessing
 - Cross-validation
+- Pipeline creation
 
 
 ## Project Report
