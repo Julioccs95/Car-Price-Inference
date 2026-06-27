@@ -12,6 +12,8 @@ In this project, I analyzed car pricing data to identify the factors associated 
 - Statistical Inference
 - model interpretation
 - Business focused reporting
+- Data preprocessing
+- Cross-validation
 
 
 ## Project Report
